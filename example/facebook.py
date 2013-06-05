@@ -7,15 +7,15 @@ app.config.update(
     DEBUG=True
 )
 
-# you can specify your consumer key and consumer secret when constructing
+# you can specify your client id and client secret when constructing
 #   the Rauth service, like this:
 facebook = RauthOAuth2(
     name='facebook',
     base_url='https://graph.facebook.com/',
     access_token_url='https://graph.facebook.com/oauth/access_token',
-    authorize_url='https://www.facebook.com/dialog/oauth',
-    consumer_key='your_consumer_key',
-    consumer_secret='your_consumer_secret'
+    authorize_url='https://graph.facebook.com/oauth/authorize',
+    client_id='your_client_id',
+    client_secret='your_client_secret'
 )
 
 
@@ -39,7 +39,7 @@ def authorized(resp, access_token):
 
     session['access_token'] = access_token
 
-    me = facebook.get('me')
+    me = resp.get('me')
     
     from pprint import pformat
     return Response(pformat(me.content), mimetype='text/plain')

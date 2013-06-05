@@ -109,8 +109,8 @@ def index():
     tweets = None
     if g.user is not None:
         resp = twitter.get('statuses/home_timeline.json')
-        if resp.status == 200:
-            tweets = resp.content
+        if resp.status_code == 200:
+            tweets = resp.json()
         else:
             flash('Unable to load tweets from Twitter. Maybe out of '
                   'API calls or Twitter is overloaded.')
@@ -130,12 +130,12 @@ def tweet():
     resp = twitter.post('statuses/update.json', data={
         'status': status
     })
-    if resp.status == 403:
+    if resp.status_code == 403:
         flash('Your tweet was too long.')
-    elif resp.status == 401:
+    elif resp.status_code == 401:
         flash('Authorization error with Twitter.')
     else:
-        flash('Successfully tweeted your tweet (ID: #%s)' % resp.content['id'])
+        flash('Successfully tweeted your tweet (ID: #%s)' % resp.json().get('id'))
     return redirect(url_for('index'))
 
 
@@ -163,7 +163,7 @@ def logout():
 
 @app.route('/authorized')
 @twitter.authorized_handler()
-def authorized(resp, oauth_token):
+def authorized(rauth_session, oauth_token):
     '''
     Called after authorization. After this function finished handling,
     the tokengetter from above is used to retrieve the 2-tuple containing the
@@ -182,18 +182,18 @@ def authorized(resp, oauth_token):
     next_url = request.args.get('next') or url_for('index')
 
     # check for the Twitter-specific "access_denied" indicator
-    if resp is None and 'denied' in request.args:
+    if rauth_session is None and 'denied' in request.args:
         flash(u'You denied the request to sign in.')
         return redirect(next_url)
 
-    # pull out the nicely parsed response content.
-    content = resp.content
+    # get user info
+    user_info = rauth_session.get('account/varify_credentials.json').json()
 
-    user = User.query.filter_by(name=content['screen_name']).first()
+    user = User.query.filter_by(name=user_info['screen_name']).first()
 
     # this if the first time signing in for this user
     if user is None:
-        user = User(content['screen_name'])
+        user = User(user_info['screen_name'])
         db_session.add(user)
 
     # we now update the oauth_token and oauth_token_secret

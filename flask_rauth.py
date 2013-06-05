@@ -14,132 +14,11 @@ from functools import wraps
 from urlparse import urljoin
 from flask import request, session, redirect, current_app
 from werkzeug import parse_options_header
-from rauth.service import OAuth2Service, OAuth1Service, OflyService, Response, parse_utf8_qsl
+from rauth.service import OAuth2Service, OAuth1Service, OflyService, parse_utf8_qsl
 
 # specified by the OAuth 2.0 spec
 # http://tools.ietf.org/html/draft-ietf-oauth-v2-31#section-4.1.4
 ACCESS_DENIED = 'access_denied'
-
-_etree = None
-def get_etree():
-    '''
-    Returns an elementtree implementation. Searches for `lxml.etree`, then
-    `xml.etree.cElementTree`, then `xml.etree.ElementTree`.
-    '''
-    global _etree
-    if _etree is None:
-        try:
-            from lxml import etree
-            _etree = etree
-        except ImportError:
-            try:
-                from xml.etree import cElementTree
-                _etree = cElementTree
-            except ImportError:
-                try:
-                    from xml.etree import ElementTree
-                    _etree = ElementTree
-                except ImportError:
-                    pass
-    return _etree
-
-def parse_response(resp):
-    '''
-    Inspects a :class:`requests.Response` object and returns the content in a
-    more usable form. The following parsing checks are done:
-
-    1. JSON, using the `json` attribute.
-    2. XML, using :func:`get_etree`.
-    3. RSS or Atom, using :mod:`feedparser`, if available.
-    4. Query string, using :func:`parse_utf8_qsl`.
-    5. If all else fails the plain-text `content` is returned.
-
-    :param resp: A `requests.Response` object.
-    '''
-    if resp.json is not None:
-        return resp.json
-
-    ct, _ = parse_options_header(resp.headers.get('content-type'))
-
-    if ct in ('application/xml', 'text/xml'):
-        etree = get_etree()
-        if etree is not None:
-            return etree.fromstring(resp.content)
-
-    if ct in ('application/atom+xml', 'application/rss+xml'):
-        try:
-            import feedparser
-            return feedparser.parse(resp.content)
-        except:
-            pass
-
-    if isinstance(resp.content, basestring):
-        return parse_utf8_qsl(resp.content)
-
-    return resp.content
-
-class RauthException(RuntimeError):
-    '''
-    Raised if authorization fails for some reason.
-
-    :param message: A helpful error message for debugging.
-    :param response: The :class:`requests.Response` object associated with the
-        failure, if available.
-    '''
-    message = None
-
-    def __init__(self, message, response=None):
-        # a helpful error message for debugging
-        self.message = message
-        
-        # if available, the associate response object
-        self.response = response
-
-    def __str__(self):
-        return self.message.encode('utf-8')
-
-    def __unicode__(self):
-        return self.message
-
-class RauthResponse(Response):
-    '''
-    This class inherits :class:`rauth.service.Response`.
-
-    :param resp: A :class:`rauth.service.Response`, whose `response` attribute
-        will be re-wrapped, with better content parsing.
-    '''
-    def __init__(self, resp):
-        # the original response
-        self.response = resp.response
-
-        self._cached_content = None
-
-    @property
-    def content(self):
-        '''
-        The content associated with the response. The content is parsed into a
-        more useful format, if possible, using :func:`parse_response`.
-
-        The content is cached, so that :func:`parse_response` is only run once.
-        '''
-        if self._cached_content is None:
-            # the parsed content from the server
-            self._cached_content = parse_response(self.response)
-        return self._cached_content
-
-    @property
-    def status(self):
-        '''
-        The status code of the response.
-        '''
-        return self.response.status_code
-
-    @property
-    def content_type(self):
-        '''
-        The Content-Type of the response.
-        '''
-        return self.response.headers.get('content-type')
 
 class RauthServiceMixin(object):
     '''
@@ -147,11 +26,11 @@ class RauthServiceMixin(object):
     initialize this class on your own.** Instead, it will be initialized by one
     of the service objects above.
 
-    :param app: An Flask application object to tie this extension to.
     :param base_url: A base URL value which, if provided, will be joined
         with the URL passed to requests made on this object.
     '''
     def __init__(self, app, base_url):
+        # TODO: app is not actually used in any way.
         self.app = app
         if app is not None:
             self.init_app(app)
@@ -170,8 +49,15 @@ class RauthServiceMixin(object):
         :param app: A Flask application object.
         '''
         # the name attribute will be set by a rauth service
-        app.config.setdefault(self._consumer_key_config())
-        app.config.setdefault(self._consumer_secret_config())
+        if isinstance(self, OAuth1Service):
+            app.config.setdefault(self._consumer_key_config())
+            app.config.setdefault(self._consumer_secret_config())
+        elif isinstance(self, OAuth2Service):
+            app.config.setdefault(self._client_id_config())
+            app.config.setdefault(self._client_secret_config())
+        elif isinstance(self, OflyService):
+            app.config.setdefault(self._app_id_config())
+            app.config.setdefault(self._app_secret_config())
 
     def tokengetter(self, f):
         '''
@@ -244,6 +130,110 @@ class RauthServiceMixin(object):
     def _consumer_secret_config(self):
         return '%s_CONSUMER_SECRET' % (self.name.upper(),)
 
+    @property
+    def client_id(self):
+        '''
+        Returns the client_id for this object. A method analogous to that
+        of `consumer_key`.
+        '''
+        if self.static_client_id is not None:
+            # if a client was provided in the constructor, default to that
+            return self.static_client_id
+        elif self.app is not None and self._client_id_config() in self.app.config:
+            # if an app was provided in the constructor, search its config first
+            return self.app.config[self._client_id_config()]
+
+        # otherwise, search in the current_app config
+        return current_app.config.get(self._client_id_config(), None)
+
+    @client_id.setter
+    def client_id(self, client_id):
+        self.static_client_id = client_id
+
+    @property
+    def client_secret(self):
+        '''
+        Returns the client_secret for this object. A method analogous to that
+        of `client_id`.
+        '''
+        if self.static_client_secret is not None:
+            # if a consumer secret was provided in the constructor, default to that
+            return self.static_client_secret
+        elif self.app is not None and self._client_secret_config() in self.app.config:
+            # if an app was provided in the constructor, search its config first
+            return self.app.config[self._client_secret_config()]
+
+        # otherwise, search in the current_app config
+        return current_app.config.get(self._client_secret_config(), None)
+
+    @client_secret.setter
+    def client_secret(self, client_secret):
+        self.static_client_secret = client_secret
+
+    def _client_id_config(self):
+        return '%s_CLIENT_ID' % (self.name.upper(),)
+
+    def _client_secret_config(self):
+        return '%s_CLIENT_SECRET' % (self.name.upper(),)
+
+    @property
+    def app_id(self):
+        '''
+        Returns the app_id for this object. A method analogous to that
+        of `consumer_key`.
+        '''
+        if self.static_app_id is not None:
+            # if a client was provided in the constructor, default to that
+            return self.static_app_id
+        elif self.app is not None and self._app_id_config() in self.app.config:
+            # if an app was provided in the constructor, search its config first
+            return self.app.config[self._app_id_config()]
+
+        # otherwise, search in the current_app config
+        return current_app.config.get(self._app_id_config(), None)
+
+    @app_id.setter
+    def app_id(self, app_id):
+        self.static_app_id = app_id
+
+    @property
+    def app_secret(self):
+        '''
+        Returns the app_secret for this object. A method analogous to that
+        of `app_id`.
+        '''
+        if self.static_app_secret is not None:
+            # if a consumer secret was provided in the constructor, default to that
+            return self.static_app_secret
+        elif self.app is not None and self._app_secret_config() in self.app.config:
+            # if an app was provided in the constructor, search its config first
+            return self.app.config[self._app_secret_config()]
+
+        # otherwise, search in the current_app config
+        return current_app.config.get(self._app_secret_config(), None)
+
+    @client_secret.setter
+    def client_secret(self, client_secret):
+        self.static_client_secret = client_secret
+
+    def _app_id_config(self):
+        return '%s_APP_ID' % (self.name.upper(),)
+
+    def _app_secret_config(self):
+        return '%s_APP_SECRET' % (self.name.upper(),)
+
+    def get(self, url, **kwargs):
+        return self.request('GET', url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request('POST', url, **kwargs)
+
+    def put(self, url, **kwargs):
+        return self.request('PUT', url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request('DELETE', url, **kwargs)
+
 class RauthOAuth2(OAuth2Service, RauthServiceMixin):
     '''
     Encapsulates OAuth 2.0 interaction to be easily integrated with Flask.
@@ -262,9 +252,10 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
     :param kwargs: Any arguments that can be passed to
         :class:`rauth.OAuth2Service`.
     '''
-    def __init__(self, app=None, base_url=None, consumer_key=None, consumer_secret=None, **kwargs):
+    def __init__(self, app=None, base_url=None, client_id=None, client_secret=None, **kwargs):
         RauthServiceMixin.__init__(self, app=app, base_url=base_url)
-        OAuth2Service.__init__(self, consumer_key=consumer_key, consumer_secret=consumer_secret, **kwargs)
+        OAuth2Service.__init__(self, client_id=client_id, client_secret=client_secret,
+                               base_url=base_url, **kwargs)
 
     def authorize(self, callback, **authorize_params):
         '''
@@ -279,8 +270,9 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
         '''
         # save the redirect_uri in the session
         session[self._session_key('redirect_uri')] = callback
-
-        return redirect(self.get_authorize_url(redirect_uri=callback, **authorize_params))
+        authorize_params['redirect_uri'] = callback
+        #authorize_params['response_type'] = 'code'
+        return redirect(self.get_authorize_url(**authorize_params))
 
     def authorized_handler(self, method='POST'):
         '''
@@ -302,16 +294,19 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
                 if 'error' in request.args and request.args['error'] == ACCESS_DENIED:
                     resp = ACCESS_DENIED
                 elif 'code' in request.args:
-                    resp = RauthResponse(self.get_access_token(method=method, data={
-                        'code': request.args['code'],
-                        'redirect_uri': session.pop(self._session_key('redirect_uri'), None)
-                    }))
-
-                    if resp.status != 200:
-                        raise RauthException('An error occurred while getting the OAuth 2.0 access_token', resp)
-
-                    access_token = resp.content.get('access_token')
-
+                    # GET requests need the data put under 'params' and all others
+                    # need to be under 'data'
+                    key = 'data'
+                    if method == 'GET':
+                        key='params'
+                    gat_kwargs = {
+                        key: {
+                            'code': request.args['code'],
+                            'redirect_uri': session.pop(self._session_key('redirect_uri'), None)
+                        }
+                    }
+                    access_token = self.get_access_token(method=method, **gat_kwargs)
+                    resp = self.get_session(access_token)
                 return f(*((resp, access_token) + args), **kwargs)
             return decorated
         return create_authorized_handler
@@ -333,22 +328,15 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
         :param access_token: The `access_token` required to make requests
             against this service.
         :param kwargs: Any `kwargs` that can be passed to
-            :func:`OAuth2Service.request`.
+            :func:`OAuth2Session.request`.
         '''
         url = self._expand_url(url)
 
         if access_token is None and self.tokengetter_f is not None:
             access_token = self.tokengetter_f()
 
-        # add in the access_token
-        if 'params' not in kwargs:
-            kwargs['params'] = {'access_token': access_token}
-        elif 'access_token' not in kwargs['params']:
-            # TODO: handle if the user sends bytes -> properly append 'access_token'
-            kwargs['params']['access_token'] = access_token
-
-        # call the parent implementation
-        return RauthResponse(OAuth2Service.request(self, method, url, **kwargs))
+        # get a session and call the request method
+        return self.get_session(access_token).request(self, method, url, **kwargs)
 
 class RauthOAuth1(OAuth1Service, RauthServiceMixin):
     '''
@@ -361,7 +349,8 @@ class RauthOAuth1(OAuth1Service, RauthServiceMixin):
     '''
     def __init__(self, app=None, base_url=None, consumer_key=None, consumer_secret=None, **kwargs):
         RauthServiceMixin.__init__(self, app=app, base_url=base_url)
-        OAuth1Service.__init__(self, consumer_key=consumer_key, consumer_secret=consumer_secret, **kwargs)
+        OAuth1Service.__init__(self, consumer_key=consumer_key, consumer_secret=consumer_secret,
+                               base_url=base_url, **kwargs)
 
     def authorize(self, callback, **request_params):
         '''
@@ -375,23 +364,23 @@ class RauthOAuth1(OAuth1Service, RauthServiceMixin):
             is `scope`.
         '''
         # fetch the request_token (token and secret 2-tuple) and convert it to a dict
-        request_token = self.get_request_token(oauth_callback=callback, **request_params)
-        request_token = {'request_token': request_token[0], 'request_token_secret': request_token[1]}
+        request_params['oauth_callback'] = callback
+        request_token = self.get_request_token(data=request_params)
 
         # save the request_token in the session
         session[self._session_key('request_token')] = request_token
-        
+
         # pass the token and any user-provided parameters
-        return redirect(self.get_authorize_url(request_token['request_token']))
+        return redirect(self.get_authorize_url(request_token[0]))
 
     def authorized_handler(self, method='POST'):
         '''
-        The handler should expect two arguments: `response` and `oauth_token`.
+        The handler should expect two arguments: `session` and `oauth_token`.
         By default, a `POST` request is used to fetch the access token. If you
         need to send a `GET` request, use the
         ``authorized_handler(method='GET')`` to do so.
 
-        If `response` is ``None`` then the user *most-likely* denied access
+        If `session` is ``None`` then the user *most-likely* denied access
             to his/her information. Since OAuth 1.0a does not specify a
             standard query parameter to specify that the user denied the
             authorization, you will need to figure out how the endpoint that
@@ -400,22 +389,20 @@ class RauthOAuth1(OAuth1Service, RauthServiceMixin):
         def create_authorized_handler(f):
             @wraps(f)
             def decorated(*args, **kwargs):
-                resp = oauth_token = None
+                s = token = None
+                request_token, request_token_secret = session.pop(self._session_key('request_token'))
                 if 'oauth_verifier' in request.args:
-                    resp = RauthResponse(self.get_access_token(
+                    token = self.get_access_token(
+                        request_token,
+                        request_token_secret,
                         method=method,
-                        data={'oauth_verifier': request.args['oauth_verifier']},
-                        **session.pop(self._session_key('request_token'), {}))
+                        data={'oauth_verifier': request.args['oauth_verifier']}
                     )
-
-                    if resp.status != 200:
-                        raise RauthException('An error occurred during OAuth 1.0a authorization', resp)
-
-                    oauth_token = (resp.content.get('oauth_token'), resp.content.get('oauth_token_secret'))
-
-                return f(*((resp, oauth_token) + args), **kwargs)
+                    s = self.get_session(token)
+                return f(*((s, token) + args), **kwargs)
             return decorated
         return create_authorized_handler
+
 
     def request(self, method, url, oauth_token=None, **kwargs):
         '''
@@ -427,14 +414,9 @@ class RauthOAuth1(OAuth1Service, RauthServiceMixin):
         if oauth_token is None and self.tokengetter_f is not None:
             oauth_token = self.tokengetter_f()
 
-        # take apart the 2-tuple
-        if oauth_token is not None:
-            oauth_token, oauth_token_secret = oauth_token
-        else:
-            oauth_token_secret = None
+        # get a session and make the request
+        return self.get_session(oauth_token).request(self, method, url, **kwargs)
 
-        # call the parent implementation
-        return RauthResponse(OAuth1Service.request(self, method, url, access_token=oauth_token, access_token_secret=oauth_token_secret, **kwargs))
 
 class RauthOfly(OflyService, RauthServiceMixin):
     '''
@@ -447,7 +429,8 @@ class RauthOfly(OflyService, RauthServiceMixin):
     '''
     def __init__(self, app=None, base_url=None, consumer_key=None, consumer_secret=None, **kwargs):
         RauthServiceMixin.__init__(self, app=app, base_url=base_url)
-        OflyService.__init__(self, consumer_key=consumer_key, consumer_secret=consumer_secret, **kwargs)
+        OflyService.__init__(self, consumer_key=consumer_key, consumer_secret=consumer_secret,
+                             base_url=base_url, **kwargs)
 
     def authorize(self, callback, **authorize_params):
         '''
@@ -492,6 +475,7 @@ class RauthOfly(OflyService, RauthServiceMixin):
             return decorated
         return create_authorized_handler
 
+
     def request(self, method, url, oflyUserid=None, **kwargs):
         '''
         Make a request using an `oflyUserid` obtained via the
@@ -509,5 +493,5 @@ class RauthOfly(OflyService, RauthServiceMixin):
             # TODO: handle if the user sends bytes -> properly append 'oflyUserid'
             kwargs['params']['oflyUserid'] = oflyUserid
 
-        # call the parent implementation
-        return RauthResponse(OflyService.request(self, method, url, **kwargs))
+        # get session and make the request
+        return self.get_session(oflyUserid).request(self, method, url, **kwargs)

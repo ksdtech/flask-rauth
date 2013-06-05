@@ -56,7 +56,7 @@ consumer_secret.
 Many social networking websites have OAuth 1.0a or 2.0 capabilities. Find
 the developer documentation for an OAuth endpoint, and follow the documentation
 to get two important pieces of information: a **consumer key** and a **consumer
-secret**. You, as the web developer, are the consumer. The consumer key and 
+secret**. You, as the web developer, are the consumer. The consumer key and
 consumer secret uniquely identify your website when you interact with the
 external web service.
 
@@ -122,7 +122,7 @@ Enough with the talk, let's look at some code!
 Initialize the service object
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To get started, you will need to initialize a Flask-Rauth 
+To get started, you will need to initialize a Flask-Rauth
 :ref:`service object <services-label>`.
 
 .. _oauth2-init:
@@ -191,7 +191,7 @@ In your app config
 application factory to generate your Flask application object or when you may
 have multiple sets of consumer keys and secrets and you want to keep them all
 in one place. One use-case is if you would like a separate consumer key and
-secret for a development vs. testing vs. production environment. 
+secret for a development vs. testing vs. production environment.
 
 .. code-block:: python
     :emphasize-lines: 6-7, 9-10
@@ -201,8 +201,8 @@ secret for a development vs. testing vs. production environment.
 
     # set config values
     app.config.update(
-        GITHUB_CONSUMER_KEY='<GitHub consumer key>',
-        GITHUB_CONSUMER_SECRET='<GitHub consumer secret>',
+        GITHUB_CLIENT_ID='<GitHub Client ID>',
+        GITHUB_CLIENT_SECRET='<GitHub Client Secret>',
 
         TWITTER_CONSUMER_KEY='<Twitter consumer key>',
         TWITTER_CONSUMER_SECRET='<Twitter consumer secret>',
@@ -248,8 +248,8 @@ initializing your service object.
         base_url='https://api.github.com/',
         authorize_url='https://github.com/login/oauth/authorize',
         access_token_url='https://github.com/login/oauth/access_token',
-        consumer_key='<GitHub consumer key>',
-        consumer_secret='<GitHub consumer secret>'
+        client_id='<GitHub Client ID>',
+        client_secret='<GitHub Client Secret>'
     )
 
     twitter = RauthOAuth1(
@@ -327,10 +327,10 @@ be the absolute URL to a another route (in the example above, the route was
 
 This is a special route marked by the :func:`authorized_handler` decorator.
 This route will receive two parameters upon successful authorization:
-a special `RauthResponse` object and the token required for making requests on
-behalf of the authenticated user. If the first parameter is `None` or 
-``access_denied``, the authorization step failed (see `Handle if the user
-denies`_).
+a `rauth.session.RauthSession` object for the relative OAuth version and
+the token required for making requests on behalf of the authenticated user.
+If the first parameter is `None` or ``access_denied``, the authorization step
+failed (see `Handle if the user denies`_).
 
 When you declare your authorized handler, the top of it should look a lot like
 this:
@@ -339,20 +339,20 @@ this:
 
     @app.route('/authorized')
     @github.authorized_handler()
-    def authorized(response, access_token):
+    def authorized(rauth_session, access_token):
         # ...
 
 As you can see, you're expecting the two parameters that are mentioned above.
 
 Suppose your endpoint insists that a `GET` request must be issued when fetching
-the access token. Well, simply pass a `method` keyword argument to your 
+the access token. Well, simply pass a `method` keyword argument to your
 :func:`authorized_handler` decorator.
 
 .. code-block:: python
 
     @app.route('/authorized')
     @acme.authorized_handler(method='GET')
-    def authorized(response, access_token):
+    def authorized(rauth_session, access_token):
         # ...
 
 By default, a `POST` request is used.
@@ -375,7 +375,7 @@ __ http://packages.python.org/Flask-SQLAlchemy/
 
     @app.route('/authorized')
     @github.authorized_handler()
-    def authorized(resp, access_token):
+    def authorized(rauth_session, access_token):
         # save the access token to the database
         current_user.access_token = access_token
         db.session.commit()
@@ -399,7 +399,7 @@ __ http://packages.python.org/Flask-SQLAlchemy/
 
     @app.route('/authorized')
     @linkedin.authorized_handler()
-    def authorized(resp, oauth_token):
+    def authorized(rauth_session, oauth_token):
         # save the OAuth token to the database
         current_user.oauth_token = oauth_token[0]
         current_user.oauth_token_secret = oauth_token[1]
@@ -411,13 +411,13 @@ Handle if the user denies
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you've worked with OAuth before, you'll know that there's the possibility
-that the user denies access to their information. 
+that the user denies access to their information.
 
 OAuth 2.0
 '''''''''
 
 This case is clearly defined in the OAuth 2.0 spec. The `redirect_uri` will
-have the query parameter ``error=access_denied`` added to it. 
+have the query parameter ``error=access_denied`` added to it.
 
 With Flask-Rauth, all you need to do is check whether the first argument in
 your `authorized_handler` is equal to the string ``access_denied``.
@@ -427,8 +427,8 @@ your `authorized_handler` is equal to the string ``access_denied``.
 
     @app.route('/authorized')
     @github.authorized_handler()
-    def authorized(resp, access_token):
-        if resp == 'access_denied':
+    def authorized(rauth_session, access_token):
+        if rauth_session == 'access_denied':
             return 'You denied access, meanie.'
 
         flash('You have been logged in to GitHub successfully.')
@@ -466,8 +466,8 @@ __ https://developer.linkedin.com/blog/making-it-easier-you-develop-linkedin
 
     @app.route('/authorized')
     @linkedin.authorized_handler()
-    def authorized(resp, oauth_token):
-        if resp is None:
+    def authorized(rauth_session, oauth_token):
+        if rauth_session is None:
             return 'You denied access, meanie.'
 
         flash('You have been logged in to Twitter successfully.')
@@ -488,11 +488,11 @@ Twitter!
 
     @app.route('/authorized')
     @twitter.authorized_handler()
-    def authorized(resp, oauth_token):
+    def authorized(rauth_session, oauth_token):
         # check for the Twitter-specific "access_denied" indicator
-        if resp is None and 'denied' in request.args:
+        if rauth_session is None and 'denied' in request.args:
             return 'You denied access, meanie.'
-        elif resp is None:
+        elif rauth_session is None:
             return 'Hey developer, something unexpected happened.'
 
         flash('You have been logged in to Twitter successfully.')
@@ -534,6 +534,18 @@ When using OAuth 1.0a, use the keyword `oauth_token`.
 This method of passing a token is most useful when you have to use multiple
 tokens at the same time (i.e. you are fetching repository information for more
 than one authorized GitHub user in a single request).
+
+If you want to make multiple requests on behalf of a single user you can use
+the :func:`get_session` method to get a session that can make multiple calls
+using the same token.
+
+.. code-block:: python
+
+    # github is an OAuth 2.0 service object
+    # Note: use get_session(oauth_token) for OAuth 1.0a service objects
+    s = github.get_session(access_token)
+    r1 = s.get('user')
+    r2 = s.get('user/keys')
 
 Implicitly, by defining a token getter function
 '''''''''''''''''''''''''''''''''''''''''''''''
@@ -609,19 +621,10 @@ Helpers
 
 .. _response-label:
 
-.. autoclass:: RauthResponse
-   :members:
-
 Internals
 ~~~~~~~~~
 
 .. autoclass:: RauthServiceMixin
    :members:
-   :exclude-members: consumer_secret_setter, consumer_key_setter
-
-.. autoexception:: RauthException
-
-.. autofunction:: get_etree
-
-.. autofunction:: parse_response
+   :exclude-members: consumer_secret_setter, consumer_key_setter, client_id_setter, client_key_setter, app_id_setter, app_secret_setter
 

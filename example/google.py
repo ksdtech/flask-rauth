@@ -5,8 +5,8 @@ app = Flask(__name__)
 # you can specify the consumer key and consumer secret in the application,
 #   like this:
 app.config.update(
-    GOOGLE_CONSUMER_KEY='your_conumser_key',
-    GOOGLE_CONSUMER_SECRET='your_conumser_secret',
+    GOOGLE_CLIENT_ID='your_client_id',
+    GOOGLE_CLIENT_SECRET='your_client_secret',
     SECRET_KEY='just a secret key, to confound the bad guys',
     DEBUG=True
 )
