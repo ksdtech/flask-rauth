@@ -13,8 +13,9 @@
 from functools import wraps
 from urlparse import urljoin
 from flask import request, session, redirect, current_app
-from werkzeug import parse_options_header
-from rauth.service import OAuth2Service, OAuth1Service, OflyService, parse_utf8_qsl
+from rauth.service import OAuth2Service, OAuth1Service, OflyService
+from rauth.utils import parse_utf8_qsl
+from json import loads as parse_json
 
 # specified by the OAuth 2.0 spec
 # http://tools.ietf.org/html/draft-ietf-oauth-v2-31#section-4.1.4
@@ -274,7 +275,7 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
         #authorize_params['response_type'] = 'code'
         return redirect(self.get_authorize_url(**authorize_params))
 
-    def authorized_handler(self, method='POST'):
+    def authorized_handler(self, method='POST', grant_type='authorization_code', decoder=parse_json):
         '''
         The decorator to assign a function that will be called after
         authorization is complete. By default, a `POST` request is used to
@@ -302,10 +303,11 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
                     gat_kwargs = {
                         key: {
                             'code': request.args['code'],
+                            'grant_type': grant_type,
                             'redirect_uri': session.pop(self._session_key('redirect_uri'), None)
                         }
                     }
-                    access_token = self.get_access_token(method=method, **gat_kwargs)
+                    access_token = self.get_access_token(method=method, decoder=decoder, **gat_kwargs)
                     resp = self.get_session(access_token)
                 return f(*((resp, access_token) + args), **kwargs)
             return decorated
@@ -334,9 +336,9 @@ class RauthOAuth2(OAuth2Service, RauthServiceMixin):
 
         if access_token is None and self.tokengetter_f is not None:
             access_token = self.tokengetter_f()
-
+        
         # get a session and call the request method
-        return self.get_session(access_token).request(self, method, url, **kwargs)
+        return self.get_session(access_token).request(method, url, **kwargs)
 
 class RauthOAuth1(OAuth1Service, RauthServiceMixin):
     '''
@@ -495,3 +497,4 @@ class RauthOfly(OflyService, RauthServiceMixin):
 
         # get session and make the request
         return self.get_session(oflyUserid).request(self, method, url, **kwargs)
+    
